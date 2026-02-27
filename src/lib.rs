@@ -163,7 +163,7 @@ pub type Bear4096 = Bear<U4096>;
 pub(crate) mod tests {
     use super::*;
     use cipher::Array;
-    use rand::{CryptoRng, SeedableRng, rngs::StdRng};
+    use rand::{CryptoRng, RngExt, SeedableRng, rngs::StdRng};
 
     /// Helper function to initialize a `Bear4096` instance with test keys.
     pub fn test_cipher(rng: &mut impl CryptoRng) -> Bear4096 {
@@ -246,43 +246,87 @@ pub(crate) mod tests {
     #[test]
     fn strict_avalanche_criterion() {
         let mut rng = StdRng::seed_from_u64(37);
-
         let cipher = test_cipher(&mut rng);
 
-        let base_input = sample_block(&mut rng);
-        let mut base_output = base_input.clone();
-        cipher.encrypt_block_inplace(&mut base_output);
+        const TOTAL_BYTES: usize = 4096;
+        const TOTAL_BITS: usize = TOTAL_BYTES * 8;
+        const NUM_BITS_TO_TEST: usize = 6;
+        const NUM_SAMPLES: usize = 100;
+        const EXPECTED_FLIPS: i32 = (NUM_SAMPLES / 2) as i32;
 
-        let total_bits = 4096 * 8;
-        let expected_flips = total_bits / 2;
-        let tolerance = 500;
+        let mut bits_to_test = [0; NUM_BITS_TO_TEST];
+        bits_to_test.fill_with(|| rng.random_range(0..TOTAL_BITS));
 
-        let bits_to_test = [0, 1, 43 * 8, 44 * 8, 2048 * 8, 4095 * 8 + 7];
+        // 1. Calculate the number of independent checks we are making
+        let num_independent_tests = bits_to_test.len() * TOTAL_BITS;
+
+        // 2. We want the ENTIRE test to pass 90% of the time.
+        let target_overall_success: f64 = 0.90;
+
+        // Probability that a single bit test passes, to achieve the overall target
+        let p_one_pass = target_overall_success.powf(1.0 / num_independent_tests as f64);
+
+        // Calculate the Z-score using an approximation of the Inverse Normal CDF
+        let z_score = {
+            let alpha = 1.0 - p_one_pass;
+            let t = (-2.0 * (alpha / 2.0).ln()).sqrt();
+            let c0 = 2.515517;
+            let c1 = 0.802853;
+            let c2 = 0.010328;
+            let d1 = 1.432788;
+            let d2 = 0.189269;
+            let d3 = 0.001308;
+            t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t)
+        };
+
+        // 3. Calculate ideal standard error for the binomial distribution (p=0.5)
+        // Standard Error (SE) of the sum = sqrt(N * p * (1-p)) = sqrt(N * 0.25)
+        let standard_error = (NUM_SAMPLES as f64 * 0.25).sqrt();
+
+        // 4. Final dynamic tolerance
+        let tolerance = (z_score * standard_error).round() as isize;
 
         for &bit_idx in &bits_to_test {
-            let mut mutated_input = base_input.clone();
-            let byte_idx = bit_idx / 8;
-            let bit_in_byte = bit_idx % 8;
-            mutated_input[byte_idx] ^= 1 << bit_in_byte;
+            let mut output_bit_flips = [0; TOTAL_BITS];
 
-            let mut mutated_output = mutated_input;
-            cipher.encrypt_block_inplace(&mut mutated_output);
+            for _ in 0..NUM_SAMPLES {
+                let base_input = sample_block(&mut rng);
+                let mut base_output = base_input.clone();
+                cipher.encrypt_block_inplace(&mut base_output);
 
-            let mut flipped_bits = 0;
-            for (b1, b2) in base_output.iter().zip(mutated_output.iter()) {
-                flipped_bits += (b1 ^ b2).count_ones() as usize;
+                let mut mutated_input = base_input;
+                let byte_idx = bit_idx / 8;
+                let bit_in_byte = bit_idx % 8;
+                mutated_input[byte_idx] ^= 1 << bit_in_byte;
+
+                let mut mutated_output = mutated_input;
+                cipher.encrypt_block_inplace(&mut mutated_output);
+
+                for byte_i in 0..TOTAL_BYTES {
+                    let diff_byte = base_output[byte_i] ^ mutated_output[byte_i];
+                    if diff_byte != 0 {
+                        for bit_i in 0..8 {
+                            if (diff_byte >> bit_i) & 1 == 1 {
+                                output_bit_flips[byte_i * 8 + bit_i] += 1;
+                            }
+                        }
+                    }
+                }
             }
 
-            let diff = (flipped_bits as isize - expected_flips as isize).abs();
-            assert!(
-                diff <= tolerance,
-                "SAC failed for bit {}: flipped {} bits out of {}, diff {} exceeds tolerance {}",
-                bit_idx,
-                flipped_bits,
-                total_bits,
-                diff,
-                tolerance
-            );
+            for (out_bit_idx, &flips) in output_bit_flips.iter().enumerate() {
+                let diff = (flips as isize - EXPECTED_FLIPS as isize).abs();
+                assert!(
+                    diff <= tolerance,
+                    "SAC failed for input bit {} -> output bit {}: flipped {} times out of {} samples (diff {}, max allowed {})",
+                    bit_idx,
+                    out_bit_idx,
+                    flips,
+                    NUM_SAMPLES,
+                    diff,
+                    tolerance
+                );
+            }
         }
     }
 }
