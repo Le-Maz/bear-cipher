@@ -19,7 +19,7 @@ use cipher::{
     Array, BlockCipherDecBackend, BlockCipherEncBackend, BlockSizeUser, IvSizeUser, KeyIvInit,
     KeySizeUser, ParBlocksSizeUser, StreamCipher,
     consts::{U1, U4096},
-    typenum::Unsigned,
+    typenum::{IsGreater, Sum, Unsigned},
 };
 use hybrid_array::ArraySize;
 
@@ -39,28 +39,27 @@ const CHACHA20_KEY_AND_IV_SIZE: usize = CHACHA20_KEY_SIZE + CHACHA20_IV_SIZE;
 /// the data block of size `N` into a small left segment (the stream cipher's
 /// Key + IV size) and a large right segment (the remainder of the block).
 ///
-/// `N` must be an `ArraySize` strictly greater than 44 bytes (`CHACHA20_KEY_AND_IV_SIZE`)
+/// `N` must be an `ArraySize` strictly greater than the combined size of ChaCha20 key and nonce.
 #[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
-pub struct Bear<N: ArraySize> {
+pub struct Bear<N: ArraySize>
+where
+    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+{
     /// Two separate BLAKE3 subkeys used for the hashing rounds.
     key: [[u8; blake3::KEY_LEN]; 2],
     _marker: PhantomData<N>,
 }
 
-impl<N: ArraySize> Bear<N> {
+impl<N: ArraySize> Bear<N>
+where
+    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+{
     /// Creates a new Bear block cipher instance.
     ///
     /// # Arguments
     ///
     /// * `key` - An array containing two 32-byte subkeys for BLAKE3.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the block size `N` is less than or equal to 44 bytes
-    /// (`CHACHA20_KEY_AND_IV_SIZE`), as Bear requires the block to be
-    /// larger than the combined size of the stream cipher's key and IV.
-    pub fn new(key: [[u8; blake3::KEY_LEN]; 2]) -> Self {
-        assert!(N::to_usize() > CHACHA20_KEY_AND_IV_SIZE);
+    pub const fn new(key: [[u8; blake3::KEY_LEN]; 2]) -> Self {
         Self {
             key,
             _marker: PhantomData,
@@ -117,16 +116,23 @@ impl<N: ArraySize> Bear<N> {
     }
 }
 
-impl<N: ArraySize> BlockSizeUser for Bear<N> {
+impl<N: ArraySize> BlockSizeUser for Bear<N>
+where
+    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+{
     type BlockSize = N;
 }
 
-impl<N: ArraySize> ParBlocksSizeUser for Bear<N> {
+impl<N: ArraySize> ParBlocksSizeUser for Bear<N>
+where
+    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+{
     type ParBlocksSize = U1;
 }
 
 impl<N: ArraySize> BlockCipherEncBackend for Bear<N>
 where
+    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
     cipher::Array<u8, N>: Copy,
 {
     fn encrypt_block(&self, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
@@ -136,6 +142,7 @@ where
 
 impl<N: ArraySize> BlockCipherDecBackend for Bear<N>
 where
+    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
     cipher::Array<u8, N>: Copy,
 {
     fn decrypt_block(&self, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
