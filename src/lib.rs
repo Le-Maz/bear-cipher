@@ -13,25 +13,25 @@ extern crate test;
 
 use std::marker::PhantomData;
 
-use blake3::{Hasher, OutputReader};
+use blake3::Hasher;
 use chacha20::ChaCha20;
 use cipher::{
-    Array, BlockCipherDecBackend, BlockCipherEncBackend, BlockSizeUser, IvSizeUser, KeyIvInit,
-    KeySizeUser, ParBlocksSizeUser, StreamCipher,
+    Array, BlockCipherDecBackend, BlockCipherEncBackend, BlockSizeUser, InOutBuf, IvSizeUser,
+    KeyIvInit, KeySizeUser, ParBlocksSizeUser, StreamCipher,
     consts::{U1, U4096},
     typenum::{IsGreater, Sum, Unsigned},
 };
 use hybrid_array::ArraySize;
 
 /// The key size in bytes for the underlying ChaCha20 stream cipher (32 bytes).
-const CHACHA20_KEY_SIZE: usize = <<ChaCha20 as KeySizeUser>::KeySize as Unsigned>::USIZE;
+type ChaCha20KeySize = <ChaCha20 as KeySizeUser>::KeySize;
 
 /// The initialization vector (IV) size in bytes for the underlying ChaCha20 stream cipher (12 bytes).
-const CHACHA20_IV_SIZE: usize = <<ChaCha20 as IvSizeUser>::IvSize as Unsigned>::USIZE;
+type ChaCha20IvSize = <ChaCha20 as IvSizeUser>::IvSize;
 
 /// The total size of the ChaCha20 key and IV combined (44 bytes).
 /// This defines the size of the "header" or left part of the unbalanced Feistel network.
-const CHACHA20_KEY_AND_IV_SIZE: usize = CHACHA20_KEY_SIZE + CHACHA20_IV_SIZE;
+type ChaCha20KeyAndIvSize = Sum<ChaCha20KeySize, ChaCha20IvSize>;
 
 /// The Bear wide-block cipher.
 ///
@@ -43,7 +43,7 @@ const CHACHA20_KEY_AND_IV_SIZE: usize = CHACHA20_KEY_SIZE + CHACHA20_IV_SIZE;
 #[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct Bear<N: ArraySize>
 where
-    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+    N: IsGreater<ChaCha20KeyAndIvSize>,
 {
     /// Two separate BLAKE3 subkeys used for the hashing rounds.
     key: [[u8; blake3::KEY_LEN]; 2],
@@ -52,7 +52,7 @@ where
 
 impl<N: ArraySize> Bear<N>
 where
-    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+    N: IsGreater<ChaCha20KeyAndIvSize>,
 {
     /// Creates a new Bear block cipher instance.
     ///
@@ -66,87 +66,94 @@ where
         }
     }
 
-    /// Mutates the given slice by XORing it with the BLAKE3 XOF output stream.
-    #[inline(always)]
-    fn xor_with_xof(data: &mut [u8], mut xof: OutputReader) {
-        let mut keystream = [0u8; CHACHA20_KEY_AND_IV_SIZE];
-        xof.fill(&mut keystream);
-
-        data.iter_mut()
-            .zip(keystream.iter())
-            .for_each(|(l, r)| *l ^= r);
-
-        #[cfg(feature = "zeroize")]
-        {
-            use zeroize::Zeroize;
-            keystream.zeroize();
-        }
-    }
-
     /// The core 3-step unbalanced Feistel network used for both encryption and decryption.
     ///
     /// # Arguments
     ///
-    /// * `rot_key` - A boolean indicating the direction of the operation.
-    ///   `false` for encryption (applies key 0 then key 1), `true` for decryption
-    ///   (applies key 1 then key 0).
+    /// * `flip_keys` - A boolean indicating the direction of the operation.
+    ///   `false` for encryption, `true` for decryption.
     /// * `data` - A mutable reference to the full data block of size `N`.
     #[inline(always)]
-    fn crypt_inner(&self, rot_key: bool, data: &mut Array<u8, N>) {
+    fn crypt_inner(&self, flip_keys: bool, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
+        let (left, right) = block.into_buf().split_at(ChaCha20KeyAndIvSize::USIZE);
+
         // Step 1: Hash the right part using the first key and XOR into the left part.
-        let hk1 = Hasher::new_keyed(&self.key[rot_key as usize])
-            .update(&data[CHACHA20_KEY_AND_IV_SIZE..])
-            .finalize_xof();
-        Self::xor_with_xof(&mut data[..CHACHA20_KEY_AND_IV_SIZE], hk1);
+        let key = &self.key[flip_keys as usize];
+        let left = odd_round(key, left, &right);
 
         // Step 2: Use the updated left part as the Key and IV for the stream cipher,
         // and encrypt/decrypt the right part.
-        let mut stream = ChaCha20::new_from_slices(
-            &data[..CHACHA20_KEY_SIZE],
-            &data[CHACHA20_KEY_SIZE..CHACHA20_KEY_AND_IV_SIZE],
-        )
-        .unwrap();
-        stream.apply_keystream(&mut data[CHACHA20_KEY_AND_IV_SIZE..]);
+        let right = even_round(&left, right);
 
         // Step 3: Hash the updated right part using the second key and XOR into the left part.
-        let hk2 = Hasher::new_keyed(&self.key[1 - rot_key as usize])
-            .update(&data[CHACHA20_KEY_AND_IV_SIZE..])
-            .finalize_xof();
-        Self::xor_with_xof(&mut data[..CHACHA20_KEY_AND_IV_SIZE], hk2);
+        let key = &self.key[1 - flip_keys as usize];
+        odd_round(key, left, &right);
+
+        #[inline(always)]
+        fn odd_round<'buf>(
+            key: &[u8; 32],
+            mut left: InOutBuf<'buf, 'buf, u8>,
+            right: &InOutBuf<'buf, 'buf, u8>,
+        ) -> InOutBuf<'buf, 'buf, u8> {
+            let mut hk_xof = Hasher::new_keyed(key)
+                .update(&right.get_in())
+                .finalize_xof();
+            let mut hk_digest = Array::<u8, ChaCha20KeyAndIvSize>::default();
+            hk_xof.fill(&mut hk_digest);
+            left.xor_in2out(&hk_digest);
+
+            #[cfg(feature = "zeroize")]
+            {
+                use zeroize::Zeroize;
+                hk_digest.zeroize();
+            }
+            InOutBuf::from(left.into_out())
+        }
+
+        #[inline(always)]
+        fn even_round<'buf>(
+            left: &InOutBuf<'buf, 'buf, u8>,
+            mut right: InOutBuf<'buf, 'buf, u8>,
+        ) -> InOutBuf<'buf, 'buf, u8> {
+            let (key, iv) = left.get_in().split_at(ChaCha20KeySize::USIZE);
+            let mut stream = ChaCha20::new_from_slices(key, iv)
+                .expect("slice lengths are guaranteed by typenum bounds");
+            stream.apply_keystream_inout(right.reborrow());
+
+            InOutBuf::from(right.into_out())
+        }
     }
 }
 
 impl<N: ArraySize> BlockSizeUser for Bear<N>
 where
-    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+    N: IsGreater<ChaCha20KeyAndIvSize>,
 {
     type BlockSize = N;
 }
 
 impl<N: ArraySize> ParBlocksSizeUser for Bear<N>
 where
-    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
+    N: IsGreater<ChaCha20KeyAndIvSize>,
 {
     type ParBlocksSize = U1;
 }
 
 impl<N: ArraySize> BlockCipherEncBackend for Bear<N>
 where
-    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
-    cipher::Array<u8, N>: Copy,
+    N: IsGreater<ChaCha20KeyAndIvSize>,
 {
     fn encrypt_block(&self, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
-        self.crypt_inner(false, block.into_out_with_copied_in());
+        self.crypt_inner(false, block);
     }
 }
 
 impl<N: ArraySize> BlockCipherDecBackend for Bear<N>
 where
-    N: IsGreater<Sum<<ChaCha20 as KeySizeUser>::KeySize, <ChaCha20 as IvSizeUser>::IvSize>>,
-    cipher::Array<u8, N>: Copy,
+    N: IsGreater<ChaCha20KeyAndIvSize>,
 {
     fn decrypt_block(&self, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
-        self.crypt_inner(true, block.into_out_with_copied_in());
+        self.crypt_inner(true, block);
     }
 }
 
