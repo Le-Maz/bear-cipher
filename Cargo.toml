@@ -1,0 +1,13 @@
+[package]
+name = "bear-cipher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+blake3 = "1.8.3"
+chacha20 = "0.10.0"
+cipher = "0.5.1"
+hybrid-array = "0.4.7"
+
+[dev-dependencies]
+rand = "0.10.0"
