@@ -34,9 +34,9 @@ type ChaCha20IvSize = <ChaCha20 as IvSizeUser>::IvSize;
 /// This defines the size of the "header" or left part of the unbalanced Feistel network.
 type ChaCha20KeyAndIvSize = Sum<ChaCha20KeySize, ChaCha20IvSize>;
 
-/// The Bear wide-block cipher.
+/// The BEAR wide-block cipher.
 ///
-/// Bear is constructed using a 3-step unbalanced Feistel network. It splits
+/// BEAR is constructed using a 3-step unbalanced Feistel network. It splits
 /// the data block of size `N` into a small left segment (the stream cipher's
 /// Key + IV size) and a large right segment (the remainder of the block).
 ///
@@ -55,7 +55,7 @@ impl<N: ArraySize> Bear<N>
 where
     N: IsGreater<ChaCha20KeyAndIvSize>,
 {
-    /// Creates a new Bear block cipher instance.
+    /// Creates a new BEAR block cipher instance.
     ///
     /// # Arguments
     ///
@@ -156,7 +156,7 @@ where
     }
 }
 
-/// A convenience type alias for a Bear cipher operating on 4096-byte blocks.
+/// A convenience type alias for a BEAR cipher operating on 4096-byte blocks.
 pub type Bear4096 = Bear<U4096>;
 
 #[cfg(test)]
