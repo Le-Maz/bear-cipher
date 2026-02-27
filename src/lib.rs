@@ -205,7 +205,7 @@ pub(crate) mod tests {
         let cipher = test_cipher(&mut rng);
 
         let mut b1 = sample_block(&mut rng);
-        let mut b2 = sample_block(&mut rng);
+        let mut b2 = b1;
         b2[0] ^= 1;
 
         cipher.encrypt_block_inplace(&mut b1);
