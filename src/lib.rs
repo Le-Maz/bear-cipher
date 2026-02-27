@@ -16,7 +16,10 @@ use std::marker::PhantomData;
 use blake3::{Hasher, OutputReader};
 use chacha20::ChaCha20;
 use cipher::{
-    Array, BlockCipherDecBackend, BlockCipherEncBackend, BlockSizeUser, IvSizeUser, KeyIvInit, KeySizeUser, ParBlocksSizeUser, StreamCipher, consts::{U1, U4096}, typenum::Unsigned
+    Array, BlockCipherDecBackend, BlockCipherEncBackend, BlockSizeUser, IvSizeUser, KeyIvInit,
+    KeySizeUser, ParBlocksSizeUser, StreamCipher,
+    consts::{U1, U4096},
+    typenum::Unsigned,
 };
 use hybrid_array::ArraySize;
 
@@ -37,6 +40,7 @@ const CHACHA20_KEY_AND_IV_SIZE: usize = CHACHA20_KEY_SIZE + CHACHA20_IV_SIZE;
 /// Key + IV size) and a large right segment (the remainder of the block).
 ///
 /// `N` must be an `ArraySize` strictly greater than 44 bytes (`CHACHA20_KEY_AND_IV_SIZE`)
+#[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct Bear<N: ArraySize> {
     /// Two separate BLAKE3 subkeys used for the hashing rounds.
     key: [[u8; blake3::KEY_LEN]; 2],
@@ -72,6 +76,12 @@ impl<N: ArraySize> Bear<N> {
         data.iter_mut()
             .zip(keystream.iter())
             .for_each(|(l, r)| *l ^= r);
+
+        #[cfg(feature = "zeroize")]
+        {
+            use zeroize::Zeroize;
+            keystream.zeroize();
+        }
     }
 
     /// The core 3-step unbalanced Feistel network used for both encryption and decryption.
