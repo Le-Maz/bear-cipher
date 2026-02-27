@@ -1,3 +1,4 @@
+#![no_std]
 #![cfg_attr(test, feature(test))]
 #![warn(missing_docs)]
 
@@ -11,7 +12,7 @@
 #[cfg(test)]
 extern crate test;
 
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 
 use blake3::Hasher;
 use chacha20::ChaCha20;
