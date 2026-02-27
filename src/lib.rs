@@ -97,9 +97,7 @@ where
         mut left: InOutBuf<'buf, 'buf, u8>,
         right: &InOutBuf<'buf, 'buf, u8>,
     ) -> InOutBuf<'buf, 'buf, u8> {
-        let mut hk_xof = Hasher::new_keyed(key)
-            .update(&right.get_in())
-            .finalize_xof();
+        let mut hk_xof = Hasher::new_keyed(key).update(right.get_in()).finalize_xof();
         let mut hk_digest = Array::<u8, ChaCha20KeyAndIvSize>::default();
         hk_xof.fill(&mut hk_digest);
         left.xor_in2out(&hk_digest);
