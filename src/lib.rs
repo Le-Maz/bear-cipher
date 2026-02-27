@@ -74,54 +74,54 @@ where
     ///   `false` for encryption, `true` for decryption.
     /// * `data` - A mutable reference to the full data block of size `N`.
     #[inline(always)]
-    fn crypt_inner(&self, flip_keys: bool, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
+    fn crypt_inner(&self, flip_keys: bool, block: cipher::InOut<cipher::Block<Self>>) {
         let (left, right) = block.into_buf().split_at(ChaCha20KeyAndIvSize::USIZE);
 
         // Step 1: Hash the right part using the first key and XOR into the left part.
         let key = &self.key[flip_keys as usize];
-        let left = odd_round(key, left, &right);
+        let left = Self::odd_round(key, left, &right);
 
         // Step 2: Use the updated left part as the Key and IV for the stream cipher,
         // and encrypt/decrypt the right part.
-        let right = even_round(&left, right);
+        let right = Self::even_round(&left, right);
 
         // Step 3: Hash the updated right part using the second key and XOR into the left part.
         let key = &self.key[1 - flip_keys as usize];
-        odd_round(key, left, &right);
+        Self::odd_round(key, left, &right);
+    }
 
-        #[inline(always)]
-        fn odd_round<'buf>(
-            key: &[u8; 32],
-            mut left: InOutBuf<'buf, 'buf, u8>,
-            right: &InOutBuf<'buf, 'buf, u8>,
-        ) -> InOutBuf<'buf, 'buf, u8> {
-            let mut hk_xof = Hasher::new_keyed(key)
-                .update(&right.get_in())
-                .finalize_xof();
-            let mut hk_digest = Array::<u8, ChaCha20KeyAndIvSize>::default();
-            hk_xof.fill(&mut hk_digest);
-            left.xor_in2out(&hk_digest);
+    #[inline(always)]
+    fn odd_round<'buf>(
+        key: &[u8; 32],
+        mut left: InOutBuf<'buf, 'buf, u8>,
+        right: &InOutBuf<'buf, 'buf, u8>,
+    ) -> InOutBuf<'buf, 'buf, u8> {
+        let mut hk_xof = Hasher::new_keyed(key)
+            .update(&right.get_in())
+            .finalize_xof();
+        let mut hk_digest = Array::<u8, ChaCha20KeyAndIvSize>::default();
+        hk_xof.fill(&mut hk_digest);
+        left.xor_in2out(&hk_digest);
 
-            #[cfg(feature = "zeroize")]
-            {
-                use zeroize::Zeroize;
-                hk_digest.zeroize();
-            }
-            InOutBuf::from(left.into_out())
+        #[cfg(feature = "zeroize")]
+        {
+            use zeroize::Zeroize;
+            hk_digest.zeroize();
         }
+        InOutBuf::from(left.into_out())
+    }
 
-        #[inline(always)]
-        fn even_round<'buf>(
-            left: &InOutBuf<'buf, 'buf, u8>,
-            mut right: InOutBuf<'buf, 'buf, u8>,
-        ) -> InOutBuf<'buf, 'buf, u8> {
-            let (key, iv) = left.get_in().split_at(ChaCha20KeySize::USIZE);
-            let mut stream = ChaCha20::new_from_slices(key, iv)
-                .expect("slice lengths are guaranteed by typenum bounds");
-            stream.apply_keystream_inout(right.reborrow());
+    #[inline(always)]
+    fn even_round<'buf>(
+        left: &InOutBuf<'buf, 'buf, u8>,
+        mut right: InOutBuf<'buf, 'buf, u8>,
+    ) -> InOutBuf<'buf, 'buf, u8> {
+        let (key, iv) = left.get_in().split_at(ChaCha20KeySize::USIZE);
+        let mut stream = ChaCha20::new_from_slices(key, iv)
+            .expect("slice lengths are guaranteed by typenum bounds");
+        stream.apply_keystream_inout(right.reborrow());
 
-            InOutBuf::from(right.into_out())
-        }
+        InOutBuf::from(right.into_out())
     }
 }
 
@@ -143,7 +143,7 @@ impl<N: ArraySize> BlockCipherEncBackend for Bear<N>
 where
     N: IsGreater<ChaCha20KeyAndIvSize>,
 {
-    fn encrypt_block(&self, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
+    fn encrypt_block(&self, block: cipher::InOut<cipher::Block<Self>>) {
         self.crypt_inner(false, block);
     }
 }
@@ -152,7 +152,7 @@ impl<N: ArraySize> BlockCipherDecBackend for Bear<N>
 where
     N: IsGreater<ChaCha20KeyAndIvSize>,
 {
-    fn decrypt_block(&self, block: cipher::InOut<'_, '_, cipher::Block<Self>>) {
+    fn decrypt_block(&self, block: cipher::InOut<cipher::Block<Self>>) {
         self.crypt_inner(true, block);
     }
 }
