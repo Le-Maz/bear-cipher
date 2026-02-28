@@ -105,6 +105,7 @@ where
         #[cfg(feature = "zeroize")]
         {
             use zeroize::Zeroize;
+            hk_xof.zeroize();
             hk_digest.zeroize();
         }
         InOutBuf::from(left.into_out())
