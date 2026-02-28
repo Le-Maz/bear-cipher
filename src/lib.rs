@@ -6,7 +6,7 @@
 //!
 //! BEAR is a variable-block-size block cipher that uses a stream cipher
 //! and a cryptographic hash function to construct a wide-block cipher.
-//! This specific implementation uses ChaCha20 as the stream cipher and
+//! This specific implementation uses ChaCha12 as the stream cipher and
 //! BLAKE3 as the extensible-output function (XOF) hash.
 
 #[cfg(test)]
@@ -15,7 +15,7 @@ extern crate test;
 use core::marker::PhantomData;
 
 use blake3::Hasher;
-use chacha20::ChaCha20;
+use chacha20::ChaCha12;
 use cipher::{
     Array, BlockCipherDecBackend, BlockCipherEncBackend, BlockSizeUser, InOutBuf, IvSizeUser,
     KeyIvInit, KeySizeUser, ParBlocksSizeUser, StreamCipher,
@@ -24,15 +24,15 @@ use cipher::{
 };
 use hybrid_array::ArraySize;
 
-/// The key size in bytes for the underlying ChaCha20 stream cipher (32 bytes).
-type ChaCha20KeySize = <ChaCha20 as KeySizeUser>::KeySize;
+/// The key size in bytes for the underlying ChaCha12 stream cipher (32 bytes).
+type ChaCha12KeySize = <ChaCha12 as KeySizeUser>::KeySize;
 
-/// The initialization vector (IV) size in bytes for the underlying ChaCha20 stream cipher (12 bytes).
-type ChaCha20IvSize = <ChaCha20 as IvSizeUser>::IvSize;
+/// The initialization vector (IV) size in bytes for the underlying ChaCha12 stream cipher (12 bytes).
+type ChaCha12IvSize = <ChaCha12 as IvSizeUser>::IvSize;
 
-/// The total size of the ChaCha20 key and IV combined (44 bytes).
+/// The total size of the ChaCha12 key and IV combined (44 bytes).
 /// This defines the size of the "header" or left part of the unbalanced Feistel network.
-type ChaCha20KeyAndIvSize = Sum<ChaCha20KeySize, ChaCha20IvSize>;
+type ChaCha12KeyAndIvSize = Sum<ChaCha12KeySize, ChaCha12IvSize>;
 
 /// The BEAR wide-block cipher.
 ///
@@ -40,11 +40,11 @@ type ChaCha20KeyAndIvSize = Sum<ChaCha20KeySize, ChaCha20IvSize>;
 /// the data block of size `N` into a small left segment (the stream cipher's
 /// Key + IV size) and a large right segment (the remainder of the block).
 ///
-/// `N` must be an `ArraySize` strictly greater than the combined size of ChaCha20 key and nonce.
+/// `N` must be an `ArraySize` strictly greater than the combined size of ChaCha12 key and nonce.
 #[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize, zeroize::ZeroizeOnDrop))]
 pub struct Bear<N: ArraySize>
 where
-    N: IsGreater<ChaCha20KeyAndIvSize>,
+    N: IsGreater<ChaCha12KeyAndIvSize>,
 {
     /// Two separate BLAKE3 subkeys used for the hashing rounds.
     key: [[u8; blake3::KEY_LEN]; 2],
@@ -53,7 +53,7 @@ where
 
 impl<N: ArraySize> Bear<N>
 where
-    N: IsGreater<ChaCha20KeyAndIvSize>,
+    N: IsGreater<ChaCha12KeyAndIvSize>,
 {
     /// Creates a new BEAR block cipher instance.
     ///
@@ -76,7 +76,7 @@ where
     /// * `data` - A mutable reference to the full data block of size `N`.
     #[inline(always)]
     fn crypt_inner(&self, flip_keys: bool, block: cipher::InOut<cipher::Block<Self>>) {
-        let (left, right) = block.into_buf().split_at(ChaCha20KeyAndIvSize::USIZE);
+        let (left, right) = block.into_buf().split_at(ChaCha12KeyAndIvSize::USIZE);
 
         // Step 1: Hash the right part using the first key and XOR into the left part.
         let key = &self.key[flip_keys as usize];
@@ -98,7 +98,7 @@ where
         right: &InOutBuf<'buf, 'buf, u8>,
     ) -> InOutBuf<'buf, 'buf, u8> {
         let mut hk_xof = Hasher::new_keyed(key).update(right.get_in()).finalize_xof();
-        let mut hk_digest = Array::<u8, ChaCha20KeyAndIvSize>::default();
+        let mut hk_digest = Array::<u8, ChaCha12KeyAndIvSize>::default();
         hk_xof.fill(&mut hk_digest);
         left.xor_in2out(&hk_digest);
 
@@ -115,8 +115,8 @@ where
         left: &InOutBuf<'buf, 'buf, u8>,
         mut right: InOutBuf<'buf, 'buf, u8>,
     ) -> InOutBuf<'buf, 'buf, u8> {
-        let (key, iv) = left.get_in().split_at(ChaCha20KeySize::USIZE);
-        let mut stream = ChaCha20::new_from_slices(key, iv)
+        let (key, iv) = left.get_in().split_at(ChaCha12KeySize::USIZE);
+        let mut stream = ChaCha12::new_from_slices(key, iv)
             .expect("slice lengths are guaranteed by typenum bounds");
         stream.apply_keystream_inout(right.reborrow());
 
@@ -126,21 +126,21 @@ where
 
 impl<N: ArraySize> BlockSizeUser for Bear<N>
 where
-    N: IsGreater<ChaCha20KeyAndIvSize>,
+    N: IsGreater<ChaCha12KeyAndIvSize>,
 {
     type BlockSize = N;
 }
 
 impl<N: ArraySize> ParBlocksSizeUser for Bear<N>
 where
-    N: IsGreater<ChaCha20KeyAndIvSize>,
+    N: IsGreater<ChaCha12KeyAndIvSize>,
 {
     type ParBlocksSize = U1;
 }
 
 impl<N: ArraySize> BlockCipherEncBackend for Bear<N>
 where
-    N: IsGreater<ChaCha20KeyAndIvSize>,
+    N: IsGreater<ChaCha12KeyAndIvSize>,
 {
     fn encrypt_block(&self, block: cipher::InOut<cipher::Block<Self>>) {
         self.crypt_inner(false, block);
@@ -149,7 +149,7 @@ where
 
 impl<N: ArraySize> BlockCipherDecBackend for Bear<N>
 where
-    N: IsGreater<ChaCha20KeyAndIvSize>,
+    N: IsGreater<ChaCha12KeyAndIvSize>,
 {
     fn decrypt_block(&self, block: cipher::InOut<cipher::Block<Self>>) {
         self.crypt_inner(true, block);
@@ -170,8 +170,8 @@ pub(crate) mod tests {
         let mut seed = [0u8; 32];
         rng.fill_bytes(&mut seed);
         Bear::new([
-            blake3::derive_key("BEAR-BLAKE3-ChaCha20 2026-02-27 test key 1", &seed),
-            blake3::derive_key("BEAR-BLAKE3-ChaCha20 2026-02-27 test key 2", &seed),
+            blake3::derive_key("BEAR-BLAKE3-ChaCha12 2026-02-27 test key 1", &seed),
+            blake3::derive_key("BEAR-BLAKE3-ChaCha12 2026-02-27 test key 2", &seed),
         ])
     }
 
