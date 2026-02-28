@@ -1,13 +1,7 @@
 #![no_std]
 #![cfg_attr(test, feature(test))]
 #![warn(missing_docs)]
-
-//! Implementation of the BEAR block cipher construction.
-//!
-//! BEAR is a variable-block-size block cipher that uses a stream cipher
-//! and a cryptographic hash function to construct a wide-block cipher.
-//! This specific implementation uses ChaCha12 as the stream cipher and
-//! BLAKE3 as the extensible-output function (XOF) hash.
+#![doc = include_str!("../README.md")]
 
 #[cfg(test)]
 extern crate test;
